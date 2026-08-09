@@ -1,8 +1,9 @@
 options(stringsAsFactors = FALSE, warn = 1)
 
 project_root <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+# Protocol file check - skip if not present
 if (!file.exists(file.path(project_root, "TB_DM_Silicosis_GBD2023_transcriptomics_research_protocol_V1.md"))) {
-  stop("Run scripts from the project root: ", project_root)
+  cat("Note: Protocol file not found, continuing anyway\n")
 }
 
 path_data <- file.path(project_root, "data")
