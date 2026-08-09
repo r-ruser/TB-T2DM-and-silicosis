@@ -1,0 +1,28 @@
+# Data files - DO NOT UPLOAD
+data/
+*.RData
+*.rds
+
+# Results - DO NOT UPLOAD
+result/
+
+# Figures - DO NOT UPLOAD
+*.svg
+*.pdf
+*.tiff
+*.png
+
+# Temporary files
+*.tmp
+*.log
+.Rhistory
+.RData
+.Rproj.user/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# R session
+.Rhistory
+.Rproj.user/
