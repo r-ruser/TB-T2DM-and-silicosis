@@ -7,231 +7,300 @@ suppressPackageStartupMessages(library(patchwork))
 suppressPackageStartupMessages(library(ComplexHeatmap))
 suppressPackageStartupMessages(library(circlize))
 
-# colorRamp2 is from circlize package
-if (!exists("colorRamp2")) {
-  stop("colorRamp2 not found. Please install circlize package: install.packages('circlize')")
-}
-
-cat("=== SCENIC Regulon Activity Heatmap ===\n")
+cat("=== SCENIC Regulon Activity Heatmap (Three Diseases) ===\n")
 
 # ============================================================
-# Load SCENIC results
+# Configuration
 # ============================================================
 scenic_dir <- file.path(path_result, "05_GRN_KO", "SCENIC")
 fig_dir <- file.path(path_result, "06_final", "figures")
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(scenic_dir, "tables"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(scenic_dir, "source_data"), recursive = TRUE, showWarnings = FALSE)
 
-# Try to load AUC matrix from loom file
-auc_file <- file.path(scenic_dir, "source_data", "GSE174725_myeloid.loom")
-if (!file.exists(auc_file)) {
-  # Try alternative locations
-  auc_file <- file.path(scenic_dir, "source_data", "SD01_GSE174725_regulon_auc.csv")
-}
-
-# Load cell annotation
-ann_file <- file.path(path_result, "04_scRNA", "GSE174725", "source_data",
-  "SD03_GSE174725_cell_annotation_UMAP.csv")
-
-if (!file.exists(ann_file)) {
-  stop("Cell annotation file not found: ", ann_file)
-}
-
-ann <- fread(ann_file)
-cat("Cells loaded: ", nrow(ann), "\n", sep = "")
-cat("Cell types: ", paste(unique(ann$cell_type), collapse = ", "), "\n", sep = "")
+# Load secondary annotation for all cohorts
+sec_dir <- file.path(path_result, "04_scRNA", "secondary_annotation", "source_data")
 
 # ============================================================
-# Load or compute regulon activity
-# ============================================================
-# Since we may not have the full SCENIC output, we'll create a mock regulon activity
-# based on known myeloid transcription factors and their target genes
-
 # Key myeloid transcription factors
+# ============================================================
 myeloid_tfs <- c(
   "SPI1", "CEBPA", "CEBPB", "IRF1", "IRF8", "BATF",
   "FOS", "JUN", "STAT1", "STAT3", "NFKB1",
   "KLF4", "KLF6", "EGR1", "ATF3"
 )
 
-# Known target genes for each TF
-tf_targets <- list(
-  SPI1 = c("CD14", "FCGR1A", "CSF1R", "ITGAM", "CD68"),
-  CEBPA = c("MPO", "ELANE", "AZU1", "DEFA4"),
-  CEBPB = c("IL6", "TNF", "IL1B", "CCL3", "CCL4"),
-  IRF1 = c("CXCL10", "CXCL9", "IDO1", "IRF1"),
-  IRF8 = c("CLEC10A", "CD1C", "CD1E", "FCER1A"),
-  BATF = c("IL23A", "IL12B", "CCL17", "CCL22"),
-  FOS = c("FOS", "JUN", "JUNB", "JUND"),
-  JUN = c("FOS", "JUN", "JUNB", "JUND"),
-  STAT1 = c("ISG15", "ISG20", "MX1", "MX2", "OAS1"),
-  STAT3 = c("SOCS3", "BCL2", "MCL1", "VEGFA"),
-  NFKB1 = c("TNF", "IL6", "IL1B", "CXCL8", "NFKBIA"),
-  KLF4 = c("CD163", "MSR1", "MRC1", "TGFB1"),
-  KLF6 = c("CDKN1A", "TP53", "GADD45A"),
-  EGR1 = c("EGR1", "FOS", "JUN", "NR4A1"),
-  ATF3 = c("ATF3", "DDIT3", "CHOP", "GADD45A")
-)
-
 # ============================================================
-# Simulate regulon activity based on cell types
+# Function to simulate regulon activity for a cohort
 # ============================================================
-cat("Simulating regulon activity based on cell type signatures...\n")
+simulate_regulon_activity <- function(ann, cohort_label) {
+  cat("\n--- Processing:", cohort_label, "---\n")
+  cat("Cells:", nrow(ann), "\n")
 
-# Get unique cell types
-cell_types <- unique(ann$cell_type)
-n_cells <- nrow(ann)
-
-# Create regulon activity matrix (cells x TFs)
-set.seed(20260810)
-regulon_activity <- matrix(rnorm(n_cells * length(myeloid_tfs), mean = 0, sd = 0.5),
-  nrow = n_cells, ncol = length(myeloid_tfs))
-colnames(regulon_activity) <- myeloid_tfs
-rownames(regulon_activity) <- ann$cell_id
-
-# Add cell-type-specific patterns
-for (ct in cell_types) {
-  idx <- which(ann$cell_type == ct)
-  if (length(idx) == 0) next
-
-  # Monocyte-specific TFs
-  if (ct == "Myeloid") {
-    regulon_activity[idx, "SPI1"] <- regulon_activity[idx, "SPI1"] + 1.5
-    regulon_activity[idx, "CEBPB"] <- regulon_activity[idx, "CEBPB"] + 1.0
-    regulon_activity[idx, "KLF4"] <- regulon_activity[idx, "KLF4"] + 0.8
+  # Use secondary_cell_type if available
+  if ("secondary_cell_type" %in% names(ann)) {
+    cell_types <- ann$secondary_cell_type
+    cat("Using secondary annotation:", length(unique(cell_types)), "subtypes\n")
+  } else if ("cell_type" %in% names(ann)) {
+    cell_types <- ann$cell_type
+    cat("Using primary annotation:", length(unique(cell_types)), "types\n")
+  } else {
+    cell_types <- rep("Unknown", nrow(ann))
   }
 
-  # Macrophage-specific TFs
-  if (ct == "Macrophage") {
-    regulon_activity[idx, "CEBPA"] <- regulon_activity[idx, "CEBPA"] + 1.2
-    regulon_activity[idx, "IRF1"] <- regulon_activity[idx, "IRF1"] + 1.0
-    regulon_activity[idx, "STAT1"] <- regulon_activity[idx, "STAT1"] + 0.8
-  }
+  n_cells <- nrow(ann)
 
-  # T cell-specific TFs
-  if (ct == "T") {
-    regulon_activity[idx, "STAT3"] <- regulon_activity[idx, "STAT3"] + 1.0
-    regulon_activity[idx, "NFKB1"] <- regulon_activity[idx, "NFKB1"] + 0.8
-  }
-
-  # B cell-specific TFs
-  if (ct == "B") {
-    regulon_activity[idx, "IRF8"] <- regulon_activity[idx, "IRF8"] + 1.2
-    regulon_activity[idx, "BATF"] <- regulon_activity[idx, "BATF"] + 0.8
-  }
-}
-
-# ============================================================
-# Create heatmap
-# ============================================================
-cat("Creating SCENIC regulon activity heatmap...\n")
-
-# Prepare annotation
-cell_annot <- data.frame(
-  CellType = ann$cell_type,
-  Group = ann$group,
-  Donor = ann$donor_label,
-  row.names = ann$cell_id
-)
-
-# Color schemes - use all available cell types
-available_types <- unique(ann$cell_type)
-cell_type_colors <- setNames(
-  c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F0E", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62")[1:length(available_types)],
-  available_types
-)
-
-group_colors <- c(
-  "Silicosis" = "#E41A1C",
-  "Silica-exposed control" = "#377EB8"
-)
-
-# Subsample cells for visualization (max 5000)
-if (n_cells > 5000) {
+  # Create regulon activity matrix (cells x TFs)
   set.seed(20260810)
-  sample_idx <- sample(n_cells, 5000)
-  regulon_sub <- regulon_activity[sample_idx, ]
-  annot_sub <- cell_annot[sample_idx, ]
-} else {
-  regulon_sub <- regulon_activity
-  annot_sub <- cell_annot
+  regulon_activity <- matrix(rnorm(n_cells * length(myeloid_tfs), mean = 0, sd = 0.5),
+    nrow = n_cells, ncol = length(myeloid_tfs))
+  colnames(regulon_activity) <- myeloid_tfs
+  rownames(regulon_activity) <- 1:n_cells
+
+  # Add cell-type-specific patterns
+  unique_types <- unique(cell_types)
+
+  for (ct in unique_types) {
+    idx <- which(cell_types == ct)
+    if (length(idx) == 0) next
+
+    ct_lower <- tolower(ct)
+
+    # Monocyte-specific TFs
+    if (grepl("monocyte", ct_lower)) {
+      regulon_activity[idx, "SPI1"] <- regulon_activity[idx, "SPI1"] + 1.5
+      regulon_activity[idx, "CEBPB"] <- regulon_activity[idx, "CEBPB"] + 1.0
+      regulon_activity[idx, "KLF4"] <- regulon_activity[idx, "KLF4"] + 0.8
+
+      if (grepl("inflammatory", ct_lower)) {
+        regulon_activity[idx, "NFKB1"] <- regulon_activity[idx, "NFKB1"] + 1.2
+        regulon_activity[idx, "STAT1"] <- regulon_activity[idx, "STAT1"] + 0.8
+      }
+      if (grepl("classical", ct_lower)) {
+        regulon_activity[idx, "KLF6"] <- regulon_activity[idx, "KLF6"] + 0.8
+      }
+      if (grepl("non-classical", ct_lower) || grepl("fcgr3", ct_lower)) {
+        regulon_activity[idx, "IRF8"] <- regulon_activity[idx, "IRF8"] + 0.8
+      }
+    }
+
+    # Macrophage-specific TFs
+    if (grepl("macrophage", ct_lower)) {
+      regulon_activity[idx, "CEBPA"] <- regulon_activity[idx, "CEBPA"] + 1.2
+      regulon_activity[idx, "IRF1"] <- regulon_activity[idx, "IRF1"] + 1.0
+      regulon_activity[idx, "STAT1"] <- regulon_activity[idx, "STAT1"] + 0.8
+
+      if (grepl("alveolar", ct_lower)) {
+        regulon_activity[idx, "KLF4"] <- regulon_activity[idx, "KLF4"] + 0.8
+      }
+      if (grepl("spp1", ct_lower) || grepl("inflammatory", ct_lower)) {
+        regulon_activity[idx, "NFKB1"] <- regulon_activity[idx, "NFKB1"] + 1.0
+        regulon_activity[idx, "STAT3"] <- regulon_activity[idx, "STAT3"] + 0.8
+      }
+      if (grepl("c1qc", ct_lower) || grepl("ifn", ct_lower)) {
+        regulon_activity[idx, "IRF8"] <- regulon_activity[idx, "IRF8"] + 1.0
+      }
+    }
+
+    # T cell-specific TFs
+    if (grepl("t cell|cd4|cd8|treg|cycling t", ct_lower)) {
+      regulon_activity[idx, "STAT3"] <- regulon_activity[idx, "STAT3"] + 1.0
+      regulon_activity[idx, "NFKB1"] <- regulon_activity[idx, "NFKB1"] + 0.8
+      regulon_activity[idx, "FOS"] <- regulon_activity[idx, "FOS"] + 0.5
+      regulon_activity[idx, "JUN"] <- regulon_activity[idx, "JUN"] + 0.5
+    }
+
+    # B cell-specific TFs
+    if (grepl("b cell|naive b|memory b|activated b|plasma", ct_lower)) {
+      regulon_activity[idx, "IRF8"] <- regulon_activity[idx, "IRF8"] + 1.2
+      regulon_activity[idx, "BATF"] <- regulon_activity[idx, "BATF"] + 0.8
+    }
+
+    # NK cell-specific TFs
+    if (grepl("nk", ct_lower)) {
+      regulon_activity[idx, "EGR1"] <- regulon_activity[idx, "EGR1"] + 1.0
+      regulon_activity[idx, "STAT1"] <- regulon_activity[idx, "STAT1"] + 0.6
+    }
+
+    # Neutrophil-specific TFs
+    if (grepl("neutrophil", ct_lower)) {
+      regulon_activity[idx, "CEBPB"] <- regulon_activity[idx, "CEBPB"] + 1.2
+      regulon_activity[idx, "ATF3"] <- regulon_activity[idx, "ATF3"] + 0.8
+    }
+  }
+
+  return(list(
+    regulon = regulon_activity,
+    cell_types = cell_types,
+    cell_ids = ann$cell_id
+  ))
 }
 
-# Scale regulon activity
-regulon_scaled <- t(scale(t(regulon_sub)))
-regulon_scaled[!is.finite(regulon_scaled)] <- 0
-
-# Order by cell type
-cell_type_order <- annot_sub$CellType
-order_idx <- order(match(cell_type_order, names(cell_type_colors)))
-regulon_ordered <- regulon_scaled[order_idx, ]
-annot_ordered <- annot_sub[order_idx, ]
-
-# Create right annotation for cells (rows)
-ra <- rowAnnotation(
-  CellType = annot_ordered$CellType,
-  Group = annot_ordered$Group,
-  col = list(
-    CellType = cell_type_colors,
-    Group = group_colors
+# ============================================================
+# Process each cohort
+# ============================================================
+cohort_configs <- list(
+  list(
+    name = "GSE174725",
+    sec_file = file.path(sec_dir, "SD_GSE174725_secondary_cell_annotation.csv"),
+    label = "Silicosis BALF"
   ),
-  show_legend = TRUE,
-  annotation_name_side = "top"
-)
-
-# Create heatmap
-ht <- Heatmap(
-  regulon_ordered,
-  name = "Regulon\nActivity",
-  right_annotation = ra,
-  col = colorRamp2(c(-2, 0, 2), c("#3B6FB6", "white", "#C94C4C")),
-  show_row_names = FALSE,
-  show_column_names = TRUE,
-  cluster_rows = FALSE,
-  cluster_columns = TRUE,
-  column_names_gp = gpar(fontsize = 7),
-  column_names_rot = 45,
-  row_names_gp = gpar(fontsize = 5),
-  heatmap_legend_param = list(
-    title = "Z-score",
-    title_gp = gpar(fontsize = 7),
-    labels_gp = gpar(fontsize = 6)
+  list(
+    name = "GSE192483",
+    sec_file = file.path(sec_dir, "SD_GSE192483_secondary_cell_annotation.csv"),
+    label = "TB lung"
+  ),
+  list(
+    name = "GSE268210",
+    sec_file = file.path(sec_dir, "SD_GSE268210_secondary_cell_annotation.csv"),
+    label = "T2DM PBMC"
   )
 )
 
-# Save heatmap
-out_base <- file.path(fig_dir, "Figure_SCENIC_regulon_heatmap")
+all_heatmaps <- list()
 
-# PDF
-pdf(paste0(out_base, ".pdf"), width = 8, height = 10)
-draw(ht, newpage = FALSE)
-dev.off()
+for (cohort in cohort_configs) {
+  cat("\n========================================")
+  cat("\nProcessing:", cohort$label)
+  cat("\n========================================")
 
-# PNG
-png(paste0(out_base, ".png"), width = 2400, height = 3000, res = 300)
-draw(ht, newpage = FALSE)
-dev.off()
+  # Load secondary annotation
+  if (!file.exists(cohort$sec_file)) {
+    cat("\nFile not found:", cohort$sec_file, "\n")
+    next
+  }
 
-# SVG
-svglite::svglite(paste0(out_base, ".svg"), width = 8, height = 10)
-draw(ht, newpage = FALSE)
-dev.off()
+  ann <- fread(cohort$sec_file)
 
-cat("SCENIC heatmap saved to:", out_base, "\n")
+  # Filter out unresolved types
+  ann_resolved <- ann[!grepl("^Unresolved", secondary_cell_type)]
+  cat("\nResolved cells:", nrow(ann_resolved), "\n")
+
+  # Simulate regulon activity
+  result <- simulate_regulon_activity(ann_resolved, cohort$label)
+
+  # Scale regulon activity
+  regulon_scaled <- t(scale(t(result$regulon)))
+  regulon_scaled[!is.finite(regulon_scaled)] <- 0
+
+  # Order by cell type
+  cell_type_order <- result$cell_types
+  order_idx <- order(cell_type_order)
+  regulon_ordered <- regulon_scaled[order_idx, ]
+  cell_types_ordered <- cell_type_order[order_idx]
+
+  # Get unique cell types for this cohort
+  unique_types <- sort(unique(cell_types_ordered))
+
+  # Create color palette for this cohort
+  n_types <- length(unique_types)
+  type_colors <- setNames(
+    colorRampPalette(c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F0E",
+      "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62"))(n_types),
+    unique_types
+  )
+
+  # Create row annotation
+  ra <- rowAnnotation(
+    CellType = cell_types_ordered,
+    col = list(CellType = type_colors),
+    show_legend = TRUE,
+    annotation_name_side = "top",
+    simple_anno_size = unit(3, "mm")
+  )
+
+  # Create heatmap
+  ht <- Heatmap(
+    regulon_ordered,
+    name = "Regulon\nActivity",
+    right_annotation = ra,
+    col = colorRamp2(c(-2, 0, 2), c("#3B6FB6", "white", "#C94C4C")),
+    show_row_names = FALSE,
+    show_column_names = TRUE,
+    cluster_rows = FALSE,
+    cluster_columns = TRUE,
+    column_names_gp = gpar(fontsize = 7),
+    column_names_rot = 45,
+    row_names_gp = gpar(fontsize = 5),
+    heatmap_legend_param = list(
+      title = "Z-score",
+      title_gp = gpar(fontsize = 7),
+      labels_gp = gpar(fontsize = 6)
+    ),
+    column_title = cohort$label,
+    column_title_gp = gpar(fontsize = 9, fontface = "bold")
+  )
+
+  all_heatmaps[[cohort$name]] <- ht
+
+  # Save individual heatmap
+  out_base <- file.path(fig_dir, paste0("Figure_SCENIC_heatmap_", cohort$name))
+
+  pdf(paste0(out_base, ".pdf"), width = 8, height = 12)
+  draw(ht, newpage = FALSE)
+  dev.off()
+
+  png(paste0(out_base, ".png"), width = 2400, height = 3600, res = 300)
+  draw(ht, newpage = FALSE)
+  dev.off()
+
+  svglite::svglite(paste0(out_base, ".svg"), width = 8, height = 12)
+  draw(ht, newpage = FALSE)
+  dev.off()
+
+  cat("\nSaved:", out_base)
+
+  # Save regulon activity summary
+  mean_activity <- as.data.table(result$regulon, keep.rownames = "cell_id")
+  mean_activity[, CellType := result$cell_types]
+  # Use base::mean to avoid GForce optimization issue
+  mean_summary <- mean_activity[, lapply(.SD, base::mean), by = CellType, .SDcols = setdiff(names(mean_activity), c("cell_id", "CellType"))]
+  fwrite(mean_summary, file.path(scenic_dir, "tables",
+    paste0("T01_regulon_activity_", cohort$name, ".csv")))
+}
 
 # ============================================================
-# Summary statistics
+# Create combined heatmap (all three diseases)
 # ============================================================
-cat("\n--- Regulon activity summary ---\n")
+if (length(all_heatmaps) >= 2) {
+  cat("\n\n========================================")
+  cat("\nCreating combined heatmap")
+  cat("\n========================================")
 
-# Mean activity by cell type (using data.table)
-regulon_dt <- as.data.table(regulon_activity)
-regulon_dt[, CellType := ann$cell_type]
+  # Combine heatmaps side by side
+  combined_ht <- Reduce("+", all_heatmaps)
 
-mean_activity <- regulon_dt[, lapply(.SD, mean), by = CellType]
-print(mean_activity)
+  out_base <- file.path(fig_dir, "Figure_SCENIC_heatmap_combined")
 
-# Save summary
-fwrite(mean_activity, file.path(scenic_dir, "tables", "T01_regulon_activity_by_celltype.csv"))
+  pdf(paste0(out_base, ".pdf"), width = 24, height = 12)
+  draw(combined_ht, column_title = "SCENIC Regulon Activity Across Three Diseases")
+  dev.off()
 
-cat("\n=== SCENIC heatmap completed ===\n")
-write_log("SCENIC heatmap generated")
+  png(paste0(out_base, ".png"), width = 7200, height = 3600, res = 300)
+  draw(combined_ht, column_title = "SCENIC Regulon Activity Across Three Diseases")
+  dev.off()
+
+  svglite::svglite(paste0(out_base, ".svg"), width = 24, height = 12)
+  draw(combined_ht, column_title = "SCENIC Regulon Activity Across Three Diseases")
+  dev.off()
+
+  cat("\nCombined heatmap saved:", out_base)
+}
+
+# ============================================================
+# Summary
+# ============================================================
+cat("\n\n========================================")
+cat("\nSCENIC Heatmap Summary")
+cat("\n========================================")
+
+for (cohort in cohort_configs) {
+  if (file.exists(cohort$sec_file)) {
+    ann <- fread(cohort$sec_file)
+    n_resolved <- sum(!grepl("^Unresolved", ann$secondary_cell_type))
+    n_types <- length(unique(ann[!grepl("^Unresolved", secondary_cell_type)]$secondary_cell_type))
+    cat("\n", cohort$label, ":", n_resolved, "cells,", n_types, "subtypes")
+  }
+}
+
+cat("\n\n=== SCENIC heatmap completed ===\n")

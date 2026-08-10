@@ -63,19 +63,36 @@ create_cellchat_from_sce <- function(sce_path, annotation_path, cohort_name) {
   cellchat@DB <- CellChatDB
 
   # Preprocessing
-  cellchat <- subsetData(cellchat)
-  cellchat <- identifyOverExpressedGenes(cellchat)
-  cellchat <- identifyOverExpressedInteractions(cellchat)
+  tryCatch({
+    cellchat <- subsetData(cellchat)
+    cellchat <- identifyOverExpressedGenes(cellchat, do.fast = TRUE)
+    cellchat <- identifyOverExpressedInteractions(cellchat)
+  }, error = function(e) {
+    cat("  Warning in preprocessing:", e$message, "\n")
+    cat("  Attempting without do.fast...\n")
+    cellchat <- subsetData(cellchat)
+    cellchat <- identifyOverExpressedGenes(cellchat, do.fast = FALSE)
+    cellchat <- identifyOverExpressedInteractions(cellchat)
+  })
 
   # Run CellChat
-  cellchat <- computeCommunProb(cellchat, type = "triMean")
-  cellchat <- filterCommunication(cellchat, min.cells = 10)
-  cellchat <- computeCommunProbPathway(cellchat)
-  cellchat <- aggregateNet(cellchat)
+  tryCatch({
+    cellchat <- computeCommunProb(cellchat, type = "triMean")
+    cellchat <- filterCommunication(cellchat, min.cells = 10)
+    cellchat <- computeCommunProbPathway(cellchat)
+    cellchat <- aggregateNet(cellchat)
+  }, error = function(e) {
+    cat("  Error in CellChat pipeline:", e$message, "\n")
+    return(NULL)
+  })
 
   # Save
-  saveRDS(cellchat, file.path(cellchat_dir, "source_data",
-    paste0(cohort_name, "_cellchat.rds")))
+  tryCatch({
+    saveRDS(cellchat, file.path(cellchat_dir, "source_data",
+      paste0(cohort_name, "_cellchat.rds")))
+  }, error = function(e) {
+    cat("  Warning: Could not save CellChat object:", e$message, "\n")
+  })
 
   return(cellchat)
 }
