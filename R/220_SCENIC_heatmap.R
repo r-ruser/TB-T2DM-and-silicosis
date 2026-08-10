@@ -5,6 +5,12 @@ suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(patchwork))
 suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(circlize))
+
+# colorRamp2 is from circlize package
+if (!exists("colorRamp2")) {
+  stop("colorRamp2 not found. Please install circlize package: install.packages('circlize')")
+}
 
 cat("=== SCENIC Regulon Activity Heatmap ===\n")
 
@@ -127,13 +133,11 @@ cell_annot <- data.frame(
   row.names = ann$cell_id
 )
 
-# Color schemes
-cell_type_colors <- c(
-  "Myeloid" = "#E41A1C",
-  "T" = "#377EB8",
-  "B" = "#4DAF4A",
-  "NK" = "#984EA3",
-  "Other" = "#999999"
+# Color schemes - use all available cell types
+available_types <- unique(ann$cell_type)
+cell_type_colors <- setNames(
+  c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F0E", "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62")[1:length(available_types)],
+  available_types
 )
 
 group_colors <- c(
@@ -141,27 +145,15 @@ group_colors <- c(
   "Silica-exposed control" = "#377EB8"
 )
 
-# Create annotation
-ha <- HeatmapAnnotation(
-  CellType = cell_annot$CellType,
-  Group = cell_annot$Group,
-  col = list(
-    CellType = cell_type_colors,
-    Group = group_colors
-  ),
-  show_legend = TRUE,
-  annotation_name_side = "left"
-)
-
 # Subsample cells for visualization (max 5000)
 if (n_cells > 5000) {
   set.seed(20260810)
   sample_idx <- sample(n_cells, 5000)
   regulon_sub <- regulon_activity[sample_idx, ]
-  ha_sub <- ha[sample_idx, ]
+  annot_sub <- cell_annot[sample_idx, ]
 } else {
   regulon_sub <- regulon_activity
-  ha_sub <- ha
+  annot_sub <- cell_annot
 }
 
 # Scale regulon activity
@@ -169,16 +161,28 @@ regulon_scaled <- t(scale(t(regulon_sub)))
 regulon_scaled[!is.finite(regulon_scaled)] <- 0
 
 # Order by cell type
-cell_type_order <- cell_annot$CellType[rownames(regulon_sub)]
+cell_type_order <- annot_sub$CellType
 order_idx <- order(match(cell_type_order, names(cell_type_colors)))
 regulon_ordered <- regulon_scaled[order_idx, ]
-ha_ordered <- ha_sub[order_idx, ]
+annot_ordered <- annot_sub[order_idx, ]
+
+# Create right annotation for cells (rows)
+ra <- rowAnnotation(
+  CellType = annot_ordered$CellType,
+  Group = annot_ordered$Group,
+  col = list(
+    CellType = cell_type_colors,
+    Group = group_colors
+  ),
+  show_legend = TRUE,
+  annotation_name_side = "top"
+)
 
 # Create heatmap
 ht <- Heatmap(
   regulon_ordered,
   name = "Regulon\nActivity",
-  top_annotation = ha_ordered,
+  right_annotation = ra,
   col = colorRamp2(c(-2, 0, 2), c("#3B6FB6", "white", "#C94C4C")),
   show_row_names = FALSE,
   show_column_names = TRUE,
@@ -186,6 +190,7 @@ ht <- Heatmap(
   cluster_columns = TRUE,
   column_names_gp = gpar(fontsize = 7),
   column_names_rot = 45,
+  row_names_gp = gpar(fontsize = 5),
   heatmap_legend_param = list(
     title = "Z-score",
     title_gp = gpar(fontsize = 7),
@@ -218,14 +223,11 @@ cat("SCENIC heatmap saved to:", out_base, "\n")
 # ============================================================
 cat("\n--- Regulon activity summary ---\n")
 
-# Mean activity by cell type
-mean_activity <- regulon_activity %>%
-  as.data.frame() %>%
-  mutate(CellType = ann$cell_type) %>%
-  group_by(CellType) %>%
-  summarise(across(everything(), mean)) %>%
-  as.data.frame()
+# Mean activity by cell type (using data.table)
+regulon_dt <- as.data.table(regulon_activity)
+regulon_dt[, CellType := ann$cell_type]
 
+mean_activity <- regulon_dt[, lapply(.SD, mean), by = CellType]
 print(mean_activity)
 
 # Save summary

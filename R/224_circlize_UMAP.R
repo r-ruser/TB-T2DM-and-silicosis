@@ -1,12 +1,11 @@
 source(file.path("R", "00_config.R"), encoding = "UTF-8")
-assert_packages(c("data.table", "ggplot2", "patchwork", "svglite", "ragg", "circlize"))
+assert_packages(c("data.table", "ggplot2", "patchwork", "svglite", "ragg"))
 
 suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(patchwork))
-suppressPackageStartupMessages(library(circlize))
 
-cat("=== Circlize Circular UMAP Visualization ===\n")
+cat("=== Circular UMAP Visualization ===\n")
 
 # ============================================================
 # Configuration
@@ -14,256 +13,120 @@ cat("=== Circlize Circular UMAP Visualization ===\n")
 circlize_dir <- file.path(path_result, "06_final", "figures")
 dir.create(circlize_dir, recursive = TRUE, showWarnings = FALSE)
 
+# Nature-figure theme (using sans-serif for Windows compatibility)
+theme_nature <- function(base_size = 7) {
+  theme_classic(base_size = base_size) +
+    theme(
+      axis.line = element_line(linewidth = 0.3, color = "black"),
+      axis.ticks = element_line(linewidth = 0.3, color = "black"),
+      axis.text = element_text(size = 6, color = "black"),
+      axis.title = element_text(size = 7, color = "black"),
+      legend.text = element_text(size = 5.5),
+      legend.title = element_text(size = 6, face = "bold"),
+      plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 6, color = "#666666", hjust = 0.5)
+    )
+}
+
+# Color palette for cell types
+cell_type_colors <- c(
+  "Monocyte" = "#E41A1C",
+  "Macrophage" = "#377EB8",
+  "Myeloid" = "#E41A1C",
+  "T" = "#4DAF4A",
+  "CD4 T" = "#4DAF4A",
+  "CD8 T" = "#984EA3",
+  "NK" = "#A65628",
+  "B" = "#FF7F0E",
+  "Plasma" = "#F781BF",
+  "Dendritic" = "#999999",
+  "Mast" = "#66C2A5",
+  "Epithelial" = "#FC8D62",
+  "Neutrophil" = "#D53E4F",
+  "Platelet" = "#8DA0CB",
+  "Other" = "#BBBBBB"
+)
+
 # ============================================================
-# Helper function: Create circular UMAP
+# Helper function: Create circular UMAP using coord_polar
 # ============================================================
-create_circular_umap <- function(umap_data, cohort_name, color_by = "cell_type") {
+create_circular_umap <- function(umap_data, cohort_name, color_by = NULL) {
   cat("\n--- Creating circular UMAP for", cohort_name, "---\n")
 
-  # Get UMAP coordinates
   umap_dt <- as.data.table(umap_data)
 
-  # Scale coordinates to [0, 1]
-  umap_dt[, UMAP1_scaled := (UMAP1 - min(UMAP1)) / (max(UMAP1) - min(UMAP1))]
-  umap_dt[, UMAP2_scaled := (UMAP2 - min(UMAP2)) / (max(UMAP2) - min(UMAP2))]
-
-  # Convert to polar coordinates
-  umap_dt[, angle := atan2(UMAP2_scaled - 0.5, UMAP1_scaled - 0.5)]
-  umap_dt[, radius := sqrt((UMAP1_scaled - 0.5)^2 + (UMAP2_scaled - 0.5)^2)]
-
-  # Color palette
-  cell_types <- unique(umap_dt[[color_by]])
-  n_types <- length(cell_types)
-
-  # Use nature-figure color palette
-  if (n_types <= 10) {
-    colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F0E",
-      "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62")
-  } else {
-    colors <- colorRampPalette(c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3"))(n_types)
+  # Auto-detect cell type column
+  if (is.null(color_by)) {
+    if ("cell_type" %in% names(umap_dt)) {
+      color_by <- "cell_type"
+    } else if ("broad_cell_type" %in% names(umap_dt)) {
+      color_by <- "broad_cell_type"
+    } else {
+      stop("No cell type column found in data")
+    }
   }
-  color_map <- setNames(colors[1:n_types], cell_types)
+  cat("Using color column:", color_by, "\n")
+
+  # Scale coordinates to [-1, 1]
+  umap_dt[, UMAP1_scaled := (UMAP1 - mean(UMAP1, na.rm = TRUE)) / sd(UMAP1, na.rm = TRUE)]
+  umap_dt[, UMAP2_scaled := (UMAP2 - mean(UMAP2, na.rm = TRUE)) / sd(UMAP2, na.rm = TRUE)]
+
+  # Clip to [-2, 2] to avoid extreme outliers
+  umap_dt[, UMAP1_scaled := pmax(pmin(UMAP1_scaled, 2), -2)]
+  umap_dt[, UMAP2_scaled := pmax(pmin(UMAP2_scaled, 2), -2)]
+
+  # Scale to [0, 1] for polar coordinates
+  umap_dt[, UMAP1_polar := (UMAP1_scaled + 2) / 4]
+  umap_dt[, UMAP2_polar := (UMAP2_scaled + 2) / 4]
+
+  # Get available colors
+  available_types <- unique(umap_dt[[color_by]])
+  colors_to_use <- cell_type_colors[names(cell_type_colors) %in% available_types]
 
   # Create circular plot
-  out_file <- file.path(circlize_dir, paste0("Figure_circlize_UMAP_", cohort_name))
-
-  # PDF
-  pdf(paste0(out_file, ".pdf"), width = 8, height = 8)
-
-  # Initialize circular layout
-  circos.clear()
-  circos.par(
-    start.degree = 90,
-    gap.degree = 2,
-    track.margin = c(0.01, 0.01),
-    cell.padding = c(0, 0, 0, 0)
-  )
-
-  # Create empty track
-  circos.initialize(factors = "a", xlim = c(0, 1))
-
-  # Add background track
-  circos.track(
-    factors = "a",
-    ylim = c(0, 1),
-    panel.fun = function(x, y) {
-      # Draw grid lines
-      for (r in seq(0.1, 0.9, by = 0.2)) {
-        circos.lines(
-          h = r * cos(seq(0, 2 * pi, length.out = 100)),
-          v = r * sin(seq(0, 2 * pi, length.out = 100)),
-          col = "#F0F0F0",
-          lwd = 0.5
-        )
-      }
-    },
-    track.height = 0.8,
-    bg.border = NA
-  )
-
-  # Plot cells as points
-  for (ct in cell_types) {
-    ct_data <- umap_dt[get(color_by) == ct]
-    if (nrow(ct_data) == 0) next
-
-    # Subsample if too many points
-    if (nrow(ct_data) > 1000) {
-      set.seed(20260810)
-      ct_data <- ct_data[sample(.N, 1000)]
-    }
-
-    # Convert to Cartesian coordinates on circle
-    x <- ct_data$radius * cos(ct_data$angle)
-    y <- ct_data$radius * sin(ct_data$angle)
-
-    # Add points
-    circos.points(
-      x = x,
-      y = y,
-      sector.index = "a",
-      track.index = 1,
-      col = alpha(color_map[ct], 0.6),
-      pch = 16,
-      cex = 0.3
+  p <- ggplot(umap_dt, aes(x = UMAP1_polar, y = UMAP2_polar, color = get(color_by))) +
+    geom_point(size = 0.15, alpha = 0.5) +
+    coord_polar() +
+    scale_color_manual(values = colors_to_use, name = "Cell Type") +
+    labs(title = paste(cohort_name, "- Circular UMAP"),
+      subtitle = "Polar coordinate visualization") +
+    theme_nature() +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      legend.position = "right"
     )
+
+  # Save
+  out_base <- file.path(circlize_dir, paste0("Figure_circlize_UMAP_", cohort_name))
+
+  # Subsample for saving if too large
+  if (nrow(umap_dt) > 50000) {
+    set.seed(20260810)
+    save_idx <- sample(nrow(umap_dt), 50000)
+    p_save <- ggplot(umap_dt[save_idx], aes(x = UMAP1_polar, y = UMAP2_polar, color = get(color_by))) +
+      geom_point(size = 0.1, alpha = 0.4) +
+      coord_polar() +
+      scale_color_manual(values = colors_to_use, name = "Cell Type") +
+      labs(title = paste(cohort_name, "- Circular UMAP"),
+        subtitle = paste("Polar coordinate visualization (n =", 50000, "cells)")) +
+      theme_nature() +
+      theme(
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "right"
+      )
+  } else {
+    p_save <- p
   }
 
-  # Add legend
-  legend(
-    "bottomright",
-    legend = names(color_map),
-    col = color_map,
-    pch = 16,
-    cex = 0.7,
-    bty = "n",
-    title = "Cell Type"
-  )
+  ggsave(paste0(out_base, ".pdf"), p_save, width = 8, height = 8)
+  ggsave(paste0(out_base, ".png"), p_save, width = 8, height = 8, dpi = 300)
 
-  # Add title
-  title(main = paste(cohort_name, "- Circular UMAP"),
-    sub = "Circlize circular layout")
-
-  dev.off()
-
-  # PNG
-  png(paste0(out_file, ".png"), width = 2400, height = 2400, res = 300)
-
-  circos.clear()
-  circos.par(
-    start.degree = 90,
-    gap.degree = 2,
-    track.margin = c(0.01, 0.01),
-    cell.padding = c(0, 0, 0, 0)
-  )
-
-  circos.initialize(factors = "a", xlim = c(0, 1))
-
-  circos.track(
-    factors = "a",
-    ylim = c(0, 1),
-    panel.fun = function(x, y) {
-      for (r in seq(0.1, 0.9, by = 0.2)) {
-        circos.lines(
-          h = r * cos(seq(0, 2 * pi, length.out = 100)),
-          v = r * sin(seq(0, 2 * pi, length.out = 100)),
-          col = "#F0F0F0",
-          lwd = 0.5
-        )
-      }
-    },
-    track.height = 0.8,
-    bg.border = NA
-  )
-
-  for (ct in cell_types) {
-    ct_data <- umap_dt[get(color_by) == ct]
-    if (nrow(ct_data) == 0) next
-
-    if (nrow(ct_data) > 1000) {
-      set.seed(20260810)
-      ct_data <- ct_data[sample(.N, 1000)]
-    }
-
-    x <- ct_data$radius * cos(ct_data$angle)
-    y <- ct_data$radius * sin(ct_data$angle)
-
-    circos.points(
-      x = x,
-      y = y,
-      sector.index = "a",
-      track.index = 1,
-      col = alpha(color_map[ct], 0.6),
-      pch = 16,
-      cex = 0.3
-    )
-  }
-
-  legend(
-    "bottomright",
-    legend = names(color_map),
-    col = color_map,
-    pch = 16,
-    cex = 0.7,
-    bty = "n",
-    title = "Cell Type"
-  )
-
-  title(main = paste(cohort_name, "- Circular UMAP"),
-    sub = "Circlize circular layout")
-
-  dev.off()
-
-  # SVG
-  svglite::svglite(paste0(out_file, ".svg"), width = 8, height = 8)
-
-  circos.clear()
-  circos.par(
-    start.degree = 90,
-    gap.degree = 2,
-    track.margin = c(0.01, 0.01),
-    cell.padding = c(0, 0, 0, 0)
-  )
-
-  circos.initialize(factors = "a", xlim = c(0, 1))
-
-  circos.track(
-    factors = "a",
-    ylim = c(0, 1),
-    panel.fun = function(x, y) {
-      for (r in seq(0.1, 0.9, by = 0.2)) {
-        circos.lines(
-          h = r * cos(seq(0, 2 * pi, length.out = 100)),
-          v = r * sin(seq(0, 2 * pi, length.out = 100)),
-          col = "#F0F0F0",
-          lwd = 0.5
-        )
-      }
-    },
-    track.height = 0.8,
-    bg.border = NA
-  )
-
-  for (ct in cell_types) {
-    ct_data <- umap_dt[get(color_by) == ct]
-    if (nrow(ct_data) == 0) next
-
-    if (nrow(ct_data) > 1000) {
-      set.seed(20260810)
-      ct_data <- ct_data[sample(.N, 1000)]
-    }
-
-    x <- ct_data$radius * cos(ct_data$angle)
-    y <- ct_data$radius * sin(ct_data$angle)
-
-    circos.points(
-      x = x,
-      y = y,
-      sector.index = "a",
-      track.index = 1,
-      col = alpha(color_map[ct], 0.6),
-      pch = 16,
-      cex = 0.3
-    )
-  }
-
-  legend(
-    "bottomright",
-    legend = names(color_map),
-    col = color_map,
-    pch = 16,
-    cex = 0.7,
-    bty = "n",
-    title = "Cell Type"
-  )
-
-  title(main = paste(cohort_name, "- Circular UMAP"),
-    sub = "Circlize circular layout")
-
-  dev.off()
-
-  circos.clear()
-
-  cat("Circular UMAP saved:", out_file, "\n")
+  cat("Circular UMAP saved:", out_base, "\n")
+  return(p)
 }
 
 # ============================================================
@@ -285,25 +148,26 @@ cat("GSE192483:", nrow(ann192), "cells\n")
 ann268 <- fread(file.path(path_result, "04_scRNA", "GSE268210", "source_data",
   "SD_GSE268210_UMAP_coordinates.csv"))
 cat("GSE268210:", nrow(ann268), "cells\n")
+cat("GSE268210 columns:", paste(names(ann268), collapse = ", "), "\n")
 
 # ============================================================
 # Create circular UMAPs
 # ============================================================
-create_circular_umap(ann174, "Silicosis_BALF")
-create_circular_umap(ann192, "TB_lung")
-create_circular_umap(ann268, "T2DM_PBMC")
+p1 <- create_circular_umap(ann174, "Silicosis_BALF")
+p2 <- create_circular_umap(ann192, "TB_lung")
+p3 <- create_circular_umap(ann268, "T2DM_PBMC")
 
 # ============================================================
-# Create combined circular UMAP
+# Create combined circular UMAP with facets
 # ============================================================
 cat("\n--- Creating combined circular UMAP ---\n")
 
-# Combine all cohorts
+# Prepare data for combined plot
 ann174_combined <- copy(ann174)[, cohort := "Silicosis BALF"]
 ann192_combined <- copy(ann192)[, cohort := "TB lung"]
 ann268_combined <- copy(ann268)[, cohort := "T2DM PBMC"]
 
-# Ensure column names match
+# Standardize column names
 setnames(ann174_combined, "cell_type", "cell_type_main", skip_absent = TRUE)
 setnames(ann192_combined, "cell_type", "cell_type_main", skip_absent = TRUE)
 setnames(ann268_combined, "broad_cell_type", "cell_type_main", skip_absent = TRUE)
@@ -315,38 +179,37 @@ combined <- rbindlist(list(
   ann268_combined[, .(UMAP1, UMAP2, cell_type = cell_type_main, cohort)]
 ), fill = TRUE)
 
-# Create facetted circular UMAP
-out_file <- file.path(circlize_dir, "Figure_circlize_UMAP_combined")
+# Scale coordinates
+combined[, UMAP1_scaled := (UMAP1 - mean(UMAP1, na.rm = TRUE)) / sd(UMAP1, na.rm = TRUE)]
+combined[, UMAP2_scaled := (UMAP2 - mean(UMAP2, na.rm = TRUE)) / sd(UMAP2, na.rm = TRUE)]
+combined[, UMAP1_scaled := pmax(pmin(UMAP1_scaled, 2), -2)]
+combined[, UMAP2_scaled := pmax(pmin(UMAP2_scaled, 2), -2)]
+combined[, UMAP1_polar := (UMAP1_scaled + 2) / 4]
+combined[, UMAP2_polar := (UMAP2_scaled + 2) / 4]
 
-# For combined plot, use ggplot2 with coord_polar for better faceting
-p_combined <- ggplot(combined, aes(x = UMAP1, y = UMAP2, color = cell_type)) +
-  geom_point(size = 0.2, alpha = 0.5) +
-  facet_wrap(~ cohort, ncol = 2) +
+# Get available colors
+available_types <- unique(combined$cell_type)
+colors_to_use <- cell_type_colors[names(cell_type_colors) %in% available_types]
+
+# Create combined plot
+p_combined <- ggplot(combined, aes(x = UMAP1_polar, y = UMAP2_polar, color = cell_type)) +
+  geom_point(size = 0.1, alpha = 0.4) +
   coord_polar() +
-  scale_color_manual(values = c(
-    "Monocyte" = "#E41A1C",
-    "Macrophage" = "#377EB8",
-    "T" = "#4DAF4A",
-    "CD4 T" = "#4DAF4A",
-    "CD8 T" = "#984EA3",
-    "B" = "#FF7F0E",
-    "NK" = "#A65628",
-    "Other" = "#999999"
-  ), na.value = "#CCCCCC") +
+  facet_wrap(~ cohort, ncol = 2) +
+  scale_color_manual(values = colors_to_use, name = "Cell Type") +
   labs(title = "Combined Circular UMAP",
-    subtitle = "Three-disease single-cell atlas",
-    color = "Cell Type") +
-  theme_classic(base_size = 7) +
+    subtitle = "Three-disease single-cell atlas") +
+  theme_nature() +
   theme(
-    plot.title = element_text(size = 8, face = "bold"),
-    strip.text = element_text(size = 7, face = "bold"),
-    legend.position = "right",
     axis.text = element_blank(),
     axis.ticks = element_blank(),
-    axis.title = element_blank()
+    axis.title = element_blank(),
+    strip.text = element_text(size = 7, face = "bold"),
+    legend.position = "right"
   )
 
-# Save
+# Save combined plot
+out_file <- file.path(circlize_dir, "Figure_circlize_UMAP_combined")
 ggsave(paste0(out_file, ".pdf"), p_combined, width = 12, height = 10)
 ggsave(paste0(out_file, ".png"), p_combined, width = 12, height = 10, dpi = 300)
 svglite::svglite(paste0(out_file, ".svg"), width = 12, height = 10)

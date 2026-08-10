@@ -10,27 +10,35 @@ analyses <- list(
   list(
     name = "SCENIC Heatmap",
     script = "220_SCENIC_heatmap.R",
-    description = "SCENIC regulon activity heatmap visualization"
-  ),
-  list(
-    name = "CellChat",
-    script = "221_CellChat_analysis.R",
-    description = "Cell-cell communication analysis"
-  ),
-  list(
-    name = "NicheNet",
-    script = "222_NicheNet_analysis.R",
-    description = "Ligand-receptor analysis"
-  ),
-  list(
-    name = "Monocle3 Pseudotime",
-    script = "223_Monocle3_pseudotime.R",
-    description = "Pseudotime trajectory analysis"
+    description = "SCENIC regulon activity heatmap visualization",
+    required_pkgs = c("ComplexHeatmap", "circlize")
   ),
   list(
     name = "Circlize UMAP",
     script = "224_circlize_UMAP.R",
-    description = "Circular UMAP visualization"
+    description = "Circular UMAP visualization",
+    required_pkgs = c("ggplot2", "patchwork")
+  ),
+  list(
+    name = "CellChat",
+    script = "221_CellChat_analysis.R",
+    description = "Cell-cell communication analysis",
+    required_pkgs = c("CellChat"),
+    optional = TRUE
+  ),
+  list(
+    name = "NicheNet",
+    script = "222_NicheNet_analysis.R",
+    description = "Ligand-receptor analysis",
+    required_pkgs = c("nichenetr"),
+    optional = TRUE
+  ),
+  list(
+    name = "Monocle3 Pseudotime",
+    script = "223_Monocle3_pseudotime.R",
+    description = "Pseudotime trajectory analysis",
+    required_pkgs = c("monocle3"),
+    optional = TRUE
   )
 )
 
@@ -44,6 +52,26 @@ for (i in seq_along(analyses)) {
   cat("Analysis", i, "/", length(analyses), ":", analysis$name, "\n")
   cat(analysis$description, "\n")
   cat(paste(rep("=", 60), collapse = ""), "\n\n")
+
+  # Check if required packages are available
+  pkgs_available <- all(sapply(analysis$required_pkgs, requireNamespace, quietly = TRUE))
+
+  if (!pkgs_available) {
+    missing_pkgs <- analysis$required_pkgs[!sapply(analysis$required_pkgs, requireNamespace, quietly = TRUE)]
+    cat("Missing packages:", paste(missing_pkgs, collapse = ", "), "\n")
+
+    if (isTRUE(analysis$optional)) {
+      cat("Skipping optional analysis\n")
+      results[[analysis$name]] <- list(status = "SKIPPED",
+        error = paste("Missing packages:", paste(missing_pkgs, collapse = ", ")))
+      next
+    } else {
+      cat("ERROR: Required packages missing\n")
+      results[[analysis$name]] <- list(status = "ERROR",
+        error = paste("Missing packages:", paste(missing_pkgs, collapse = ", ")))
+      next
+    }
+  }
 
   script_path <- file.path(path_r, analysis$script)
 
@@ -88,24 +116,25 @@ for (name in names(results)) {
 }
 
 # Count successes
-n_success <- sum(sapply(results, function(r) r$status == "SUCCESS"))
+n_success <- sum(sapply(results, function(r) identical(r$status, "SUCCESS")), na.rm = TRUE)
 n_total <- length(results)
 
 cat("\n", n_success, "/", n_total, " analyses completed successfully\n")
 cat("\nEnd time:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 
 # Save results summary
-results_dt <- rbindlist(lapply(names(results), function(name) {
+results_list <- lapply(names(results), function(name) {
   data.table(
     analysis = name,
     status = results[[name]]$status,
-    time_min = ifelse(!is.null(results[[name]]$time),
-      round(results[[name]]$time, 2), NA_real_),
-    error = ifelse(!is.null(results[[name]]$error),
-      results[[name]]$error, "")
+    time_min = if (!is.null(results[[name]]$time)) round(results[[name]]$time, 2) else NA_real_,
+    error = if (!is.null(results[[name]]$error)) results[[name]]$error else ""
   )
-}))
+})
+results_dt <- rbindlist(results_list, ignore.attr = TRUE)
 
+# Ensure directory exists
+dir.create(file.path(path_result, "00_audit"), recursive = TRUE, showWarnings = FALSE)
 fwrite(results_dt, file.path(path_result, "00_audit", "analysis_execution_summary.csv"))
 
 cat("\nResults summary saved to:", file.path(path_result, "00_audit", "analysis_execution_summary.csv"), "\n")
